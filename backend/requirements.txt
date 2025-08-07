@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+requests
+psutil
+python-dotenv
+pandas 
+prophet
