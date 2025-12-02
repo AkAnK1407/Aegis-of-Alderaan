@@ -1,0 +1,88 @@
+/* Container around the native <progress> for styling and overlay */
+.progressWrapper {
+  position: relative;
+  height: 10px;
+  width: 100%;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: rgba(55, 65, 81, 0.6); /* ~bg-gray-700/60 */
+  border: 1px solid rgba(75, 85, 99, 0.6); /* ~border-gray-600/60 */
+}
+
+/* Reset and base styles for the native <progress> element */
+.progressElement {
+  display: block;
+  width: 100%;
+  height: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  color: transparent; /* hide default color fill on some browsers */
+  border: 0;
+}
+
+/* WebKit (Chrome, Edge, Safari) track/value */
+.progressElement::-webkit-progress-bar {
+  background: transparent;
+}
+
+.progressElement::-webkit-progress-value {
+  background: var(--bar-fill, #22c55e); /* default green if no class is applied */
+  border-radius: 9999px;
+  transition: width 300ms ease;
+}
+
+/* Firefox bar */
+.progressElement::-moz-progress-bar {
+  background: var(--bar-fill, #22c55e);
+  border-radius: 9999px;
+  transition: width 300ms ease;
+}
+
+/* Color variants set via CSS variable so both engines pick it up */
+.barNormal {
+  --bar-fill: #10b981; /* emerald-500 */
+}
+
+.barWarning {
+  --bar-fill: #fbbf24; /* amber-400 */
+}
+
+.barCritical {
+  --bar-fill: #ef4444; /* red-500 */
+}
+
+/* Gloss overlay for a subtle highlight effect */
+.progressGloss {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.02)
+  );
+}
+
+/* Tooltip used by the recharts <Tooltip content={...} /> */
+.tooltip {
+  min-width: 160px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(31, 41, 55, 0.95); /* gray-800 with opacity */
+  border: 1px solid rgba(75, 85, 99, 0.7); /* gray-600/70 */
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+  color: #e5e7eb; /* gray-200 */
+  backdrop-filter: blur(6px);
+}
+
+/* Optional: nicer focus outline if the <progress> is keyboard-focused */
+.progressElement:focus {
+  outline: none;
+}
+
+.progressElement:focus-visible {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4); /* blue focus ring */
+  border-radius: 9999px;
+}

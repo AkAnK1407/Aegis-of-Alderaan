@@ -48,6 +48,10 @@ class Settings:
     BASELINE_UPDATE_INTERVAL_SEC: int = int(os.getenv("BASELINE_UPDATE_INTERVAL_SEC", "60"))
     FORECAST_PERIODS_MIN: int = int(os.getenv("FORECAST_PERIODS_MIN", "60"))
 
+    # Added: pressure-based classification thresholds (env-tunable)
+    PRESSURE_BUSY: float = float(os.getenv("PRESSURE_BUSY", "65.0"))
+    PRESSURE_IDLE: float = float(os.getenv("PRESSURE_IDLE", "25.0"))
+
     ALLOW_ORIGINS: List[str] = (
         os.getenv("ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
         if os.getenv("ALLOW_ORIGINS")
@@ -353,10 +357,20 @@ def guardian_logic() -> None:
                     to_remove.append(agent_id)
                     continue
 
+                # Read metrics (default to 0.0 if missing)
                 cpu = float(rec.get("cpu", 0.0))
-                if cpu > SETTINGS.BUSY_CPU_THRESHOLD:
+                mem = float(rec.get("memory", 0.0))
+                wl  = float(rec.get("workload", 0.0))
+
+                # Pressure score (tunable: 60% CPU, 30% Memory, 10% Workload)
+                pressure = 0.6 * cpu + 0.3 * mem + 0.1 * wl
+
+                busy_thresh = SETTINGS.PRESSURE_BUSY
+                idle_thresh = SETTINGS.PRESSURE_IDLE
+
+                if pressure >= busy_thresh:
                     busy_agents.append(agent_id)
-                elif cpu < SETTINGS.IDLE_CPU_THRESHOLD:
+                elif pressure <= idle_thresh:
                     idle_agents.append(agent_id)
 
             for aid in to_remove:
