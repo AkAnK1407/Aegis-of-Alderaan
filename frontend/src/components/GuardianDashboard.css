@@ -1,0 +1,52 @@
+/* Base progress bar styling */
+.progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: rgba(55, 65, 81, 0.6); /* ~ bg-gray-700/60 */
+  border: 1px solid rgba(75, 85, 99, 0.6); /* ~ border-gray-600/60 */
+}
+
+/* WebKit track/value */
+.progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+.progress::-webkit-progress-value {
+  background: var(--progress-fill, #22c55e); /* default green */
+  border-radius: 9999px;
+  transition: width 300ms ease;
+}
+
+/* Firefox value */
+.progress::-moz-progress-bar {
+  background: var(--progress-fill, #22c55e);
+  border-radius: 9999px;
+  transition: width 300ms ease;
+}
+
+/* Tone variants controlled via CSS variable */
+.progress--good {
+  --progress-fill: #10b981; /* emerald-500 */
+}
+
+.progress--warn {
+  --progress-fill: #fbbf24; /* amber-400 */
+}
+
+.progress--bad {
+  --progress-fill: #ef4444; /* red-500 */
+}
+
+/* Optional: focus ring for keyboard users */
+.progress:focus {
+  outline: none;
+}
+
+.progress:focus-visible {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4); /* blue-500/40 */
+  border-radius: 9999px;
+}

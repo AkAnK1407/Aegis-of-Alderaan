@@ -1,67 +1,270 @@
 // services/networkService.ts
 
-import { NetworkTopology, Device, Agent } from '../types/network';
+import {
+  NetworkTopology,
+  Device,
+  Agent,
+  LoadBalancingAction,
+} from "../types/network";
 
-const API_URL = 'http://127.0.0.1:8000/api';
-
-export const fetchAgentStatus = async (): Promise<Record<string, any>> => {
-  const response = await fetch(`${API_URL}/status`);
-  if (!response.ok) {
-    throw new Error('Failed to fetch agent status');
+/**
+ * Prefer env-configured API URL with sensible local fallback.
+ * - Vite: import.meta.env.VITE_API_URL
+ * - Fallback: http://127.0.0.1:8000/api
+ */
+const API_URL: string = (() => {
+  try {
+    if (typeof import.meta !== "undefined") {
+      const env = (
+        import.meta as unknown as { env?: { VITE_API_URL?: string } }
+      ).env;
+      if (env?.VITE_API_URL) return env.VITE_API_URL;
+    }
+  } catch {
+    // ignore, fallback to default
   }
-  return await response.json();
+  return "http://127.0.0.1:8000/api";
+})();
+
+class ApiError extends Error {
+  status: number;
+  statusText: string;
+  body: unknown;
+
+  constructor(
+    message: string,
+    status: number,
+    statusText: string,
+    body?: unknown
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+  }
+}
+
+/**
+ * Helper to perform JSON requests with:
+ * - AbortController timeout
+ * - Basic response parsing and typed return
+ * - Better error reporting
+ */
+async function fetchJSON<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutMs = init?.timeoutMs ?? 10000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${API_URL}${path}`, {
+      cache: "no-store",
+      ...init,
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        ...(init?.headers || {}),
+      },
+    });
+
+    const contentType = response.headers.get("content-type") || "";
+    const isJson = contentType.includes("application/json");
+
+    let body: unknown = null;
+    if (response.status !== 204) {
+      try {
+        body = isJson ? await response.json() : await response.text();
+      } catch {
+        // keep body as null if parsing fails
+      }
+    }
+
+    if (!response.ok) {
+      // Derive a meaningful error message if present
+      let message: string | null = null;
+      if (isJson && body && typeof body === "object" && "message" in body) {
+        const maybeMsg = (body as Record<string, unknown>).message;
+        if (typeof maybeMsg === "string") {
+          message = maybeMsg;
+        }
+      }
+      throw new ApiError(
+        message ?? `Request failed with status ${response.status}`,
+        response.status,
+        response.statusText,
+        body
+      );
+    }
+
+    return body as T;
+  } catch (err: unknown) {
+    const isAbort =
+      typeof err === "object" &&
+      err !== null &&
+      "name" in err &&
+      (err as { name?: unknown }).name === "AbortError";
+    if (isAbort) {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Backend "status" shape
+ */
+type RawAgentMetrics = {
+  dataCollected?: number;
+  responseTime?: number;
+  errorRate?: number;
 };
 
-
-
-// Fetch load balancing actions from backend
-import { LoadBalancingAction } from '../types/network';
-export const fetchLoadBalancingActions = async (): Promise<LoadBalancingAction[]> => {
-  const response = await fetch(`${API_URL}/load_balancing`);
-  if (!response.ok) {
-    throw new Error('Failed to fetch load balancing actions');
-  }
-  return await response.json();
+type RawAgentStatus = {
+  name?: string;
+  agent_name?: string;
+  type?: string;
+  cpu?: number;
+  memory?: number;
+  workload?: number;
+  connections?: unknown; // normalized below
+  last_seen?: string | number | Date;
+  metrics?: RawAgentMetrics;
 };
 
-// Restore fetchDeviceAIAnalysis for GuardianDashboard
-export const fetchDeviceAIAnalysis = async (agentId: string, event: any, baseline: any) => {
-  const response = await fetch(`${API_URL}/event`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+type AgentStatusResponse = Record<string, RawAgentStatus>;
+
+export const fetchAgentStatus = async (): Promise<AgentStatusResponse> => {
+  return await fetchJSON<AgentStatusResponse>("/status");
+};
+
+/**
+ * Fetch load balancing actions from backend
+ */
+export const fetchLoadBalancingActions = async (): Promise<
+  LoadBalancingAction[]
+> => {
+  return await fetchJSON<LoadBalancingAction[]>("/load_balancing");
+};
+
+/**
+ * AI analysis response can be extended as backend stabilizes
+ */
+export type AIAnalysisResponse = Record<string, unknown>;
+
+export const fetchDeviceAIAnalysis = async (
+  agentId: string,
+  event: unknown,
+  baseline: unknown
+): Promise<AIAnalysisResponse> => {
+  return await fetchJSON<AIAnalysisResponse>("/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agent_id: agentId, event, baseline }),
   });
-  if (!response.ok) {
-    throw new Error('Failed to fetch AI analysis');
-  }
-  return await response.json();
 };
 
-export const transformApiDataToTopology = (apiData: Record<string, any>): NetworkTopology => {
-  const devices: Device[] = Object.entries(apiData).map(([id, data]) => ({
-    id,
-    name: id,
-    type: id.includes('server') ? 'server' : id.includes('workstation') ? 'endpoint' : 'iot',
-    position: { x: 0, y: 0, z: 0 }, // Position can be calculated or static
-    status: data.cpu > 80 ? 'critical' : data.cpu > 60 ? 'warning' : 'healthy',
-    metrics: {
-      cpu: data.cpu,
-      memory: data.memory,
-      workload: data.workload,
-    },
-    connections: [],
-    lastSeen: new Date(data.last_seen),
-  }));
+/**
+ * Best-effort parsing helpers to keep UI resilient to partial/malformed data.
+ */
+function parseNumber(value: unknown, fallback = 0): number {
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
 
-  const agents: Agent[] = Object.entries(apiData).map(([id, data]) => ({
+function parseDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  const d =
+    typeof value === "string" || typeof value === "number"
+      ? new Date(value)
+      : new Date(NaN);
+  return isNaN(d.getTime()) ? new Date(0) : d;
+}
+
+function getDeviceTypeFromIdOrHint(id: string, hint?: string): Device["type"] {
+  const source = (hint || id || "").toLowerCase();
+  if (source.includes("server")) return "server";
+  if (
+    source.includes("workstation") ||
+    source.includes("endpoint") ||
+    source.includes("client")
+  )
+    return "endpoint";
+  if (
+    source.includes("router") ||
+    source.includes("switch") ||
+    source.includes("gateway")
+  )
+    return "iot"; // adjust if you have a dedicated 'network' type
+  return "iot";
+}
+
+function getStatusFromCpu(cpu: number): Device["status"] {
+  if (cpu >= 80) return "critical";
+  if (cpu >= 60) return "warning";
+  return "healthy";
+}
+
+/**
+ * Convert backend status payload into UI topology structure.
+ * Robust to missing fields and keeps placeholders where needed.
+ */
+export const transformApiDataToTopology = (
+  apiData: AgentStatusResponse
+): NetworkTopology => {
+  if (!apiData || typeof apiData !== "object") {
+    return { devices: [], agents: [], connections: [] };
+  }
+
+  const entries = Object.entries(apiData);
+
+  const devices: Device[] = entries.map(([id, data]) => {
+    const cpu = parseNumber(data?.cpu, 0);
+    const memory = parseNumber(data?.memory, 0);
+    const workload = parseNumber(data?.workload, 0);
+
+    // connections normalization: attempt to use array if provided; otherwise empty
+    const normalizedConnections: Device["connections"] = Array.isArray(
+      data?.connections
+    )
+      ? (data.connections as Device["connections"])
+      : [];
+
+    return {
+      id,
+      name: data?.name || id,
+      type: getDeviceTypeFromIdOrHint(id, data?.type),
+      position: { x: 0, y: 0, z: 0 }, // TODO: compute based on layout algorithm
+      status: getStatusFromCpu(cpu),
+      metrics: {
+        cpu,
+        memory,
+        workload,
+      },
+      connections: normalizedConnections,
+      lastSeen: parseDate(data?.last_seen),
+    };
+  });
+
+  const agents: Agent[] = entries.map(([id, data]) => ({
     id,
-    name: id,
+    name: data?.agent_name || data?.name || id,
     deviceId: id,
-    status: 'active', // Simplified status
-    metrics: { dataCollected: 0, responseTime: 0, errorRate: 0 }, // Placeholder
-    lastReport: new Date(data.last_seen),
+    status: "active", // TODO: map concrete status if backend provides it
+    metrics: {
+      dataCollected: parseNumber(data?.metrics?.dataCollected, 0),
+      responseTime: parseNumber(data?.metrics?.responseTime, 0),
+      errorRate: parseNumber(data?.metrics?.errorRate, 0),
+    },
+    lastReport: parseDate(data?.last_seen),
   }));
 
-  // You can build connections logic here if your API provides it
-  return { devices, agents, connections: [] };
+  // If your backend provides connection edges, translate them here
+  const connections: NetworkTopology["connections"] = [];
+
+  return { devices, agents, connections };
 };

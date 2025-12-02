@@ -4,7 +4,7 @@ import React, { useRef, useEffect, useLayoutEffect, useState } from "react";
 import * as THREE from "three";
 import { gsap } from "gsap";
 import { Device } from "../types/network";
-// import "./NetworkVisualization.css";
+import "./NetworkVisualization.css";
 
 interface Connection {
   from: string;

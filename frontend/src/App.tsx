@@ -1,15 +1,18 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Shield, BarChart3, X } from "lucide-react";
 import DeviceMetrics from "./components/DeviceMetrics";
 import GuardianDashboard from "./components/GuardianDashboard";
 import DeviceList from "./components/DeviceList";
 import { useNetworkData } from "./hooks/useNetworkData";
+import TimeseriesResultsPanel from "./components/TimeseriesResultsPanel";
 
+// View modes for the primary content area
 type ViewMode = "guardian" | "timeseries" | "metrics";
 
+// Time series types (server response)
 type ForecastPoint = {
-  ds: string;
-  yhat: number;
+  ds: string; // timestamp
+  yhat: number; // predicted value (e.g., CPU%)
 };
 
 type SpikeInfo = {
@@ -25,6 +28,36 @@ type AgentForecastResult = {
 
 type TimeseriesResults = Record<string, AgentForecastResult>;
 
+// Optional augmentation to support newer fields from useNetworkData without breaking older code
+type ExtendedNetworkData = ReturnType<typeof useNetworkData> & {
+  lastUpdated?: number | null;
+  error?: string | null;
+};
+
+// Resolve API base URL and origin (CSV served at origin, API at /api)
+const API_URL: string = (() => {
+  try {
+    if (typeof import.meta !== "undefined") {
+      const env = (
+        import.meta as unknown as { env?: { VITE_API_URL?: string } }
+      ).env;
+      if (env?.VITE_API_URL) return env.VITE_API_URL;
+    }
+  } catch {
+    // ignore
+  }
+  return "http://127.0.0.1:8000/api";
+})();
+
+const API_ORIGIN: string = (() => {
+  try {
+    const url = new URL(API_URL);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return "http://127.0.0.1:8000";
+  }
+})();
+
 function App() {
   const {
     topology,
@@ -34,13 +67,20 @@ function App() {
     isLoading,
     selectDevice,
     clearSelection,
-  } = useNetworkData();
+    // Optional newer fields; safe if not present
+    lastUpdated,
+    error: networkError,
+  } = useNetworkData() as ExtendedNetworkData;
 
   const [viewMode, setViewMode] = useState<ViewMode>("guardian");
   const [timeseriesResults, setTimeseriesResults] =
     useState<TimeseriesResults | null>(null);
   const [loadingTimeseries, setLoadingTimeseries] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<boolean>(false);
+  const [uiError, setUiError] = useState<string | null>(null);
+
+  // Abort controller for Timeseries request (avoid updates after unmount)
+  const tsControllerRef = useRef<AbortController | null>(null);
 
   const navigationItems = useMemo<
     Array<{
@@ -73,10 +113,13 @@ function App() {
     []
   );
 
-  const handleDownloadCSV = async (): Promise<void> => {
+  const handleDownloadCSV = useCallback(async (): Promise<void> => {
+    setUiError(null);
     setDownloading(true);
     try {
-      const response = await fetch("http://127.0.0.1:8000/metrics_history.csv");
+      const response = await fetch(`${API_ORIGIN}/metrics_history.csv`, {
+        cache: "no-store",
+      });
       if (!response.ok) throw new Error("Failed to download CSV");
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -88,30 +131,55 @@ function App() {
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch {
-      alert("Error downloading CSV");
+      // No unused variable in catch
+      setUiError("Error downloading CSV");
     } finally {
       setDownloading(false);
     }
-  };
+  }, [API_ORIGIN]);
 
-  const runTimeseriesAnalysis = async (): Promise<void> => {
+  const runTimeseriesAnalysis = useCallback(async (): Promise<void> => {
+    setUiError(null);
     setLoadingTimeseries(true);
     setTimeseriesResults(null);
+
+    // Abort previous request if still running
+    if (tsControllerRef.current) {
+      tsControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    tsControllerRef.current = controller;
+
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/timeseries", {
+      const response = await fetch(`${API_URL}/timeseries`, {
         method: "POST",
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
       });
       if (!response.ok) {
         throw new Error(`Timeseries API failed with status ${response.status}`);
       }
       const data = (await response.json()) as { results?: TimeseriesResults };
       setTimeseriesResults(data?.results ?? null);
-    } catch {
-      alert("Failed to run time series analysis.");
+    } catch (e) {
+      const isAbort = (e as { name?: string })?.name === "AbortError";
+      if (isAbort) {
+        return;
+      }
+      setUiError("Failed to run time series analysis.");
     } finally {
       setLoadingTimeseries(false);
     }
-  };
+  }, []);
+
+  const statusSummary = useMemo(() => {
+    const counts = { healthy: 0, warning: 0, critical: 0 };
+    if (!topology) return counts;
+    for (const d of topology.devices) {
+      counts[d.status] += 1;
+    }
+    return counts;
+  }, [topology]);
 
   if (isLoading || !topology) {
     return (
@@ -134,7 +202,7 @@ function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center space-x-3">
-              <Shield className="h-8 w-8 text-blue-400" />
+              <Shield className="h-8 w-8 text-blue-400" aria-hidden="true" />
               <div>
                 <h1 className="text-xl font-bold text-white">
                   Neural Network Guardian
@@ -145,24 +213,32 @@ function App() {
               </div>
             </div>
 
-            <nav className="flex space-x-1">
-              {navigationItems.map((item) => (
-                <button
-                  key={item.mode}
-                  onClick={() => setViewMode(item.mode)}
-                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-200 ${
-                    viewMode === item.mode
-                      ? "bg-blue-600/30 text-blue-400 border border-blue-500/30"
-                      : "text-gray-300 hover:bg-gray-700/30 hover:text-white"
-                  }`}
-                >
-                  <item.icon className="h-4 w-4" />
-                  <div className="text-left">
-                    <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs opacity-75">{item.description}</div>
-                  </div>
-                </button>
-              ))}
+            <nav className="flex space-x-1" aria-label="Primary">
+              {navigationItems.map((item) => {
+                const active = viewMode === item.mode;
+                return (
+                  <button
+                    key={item.mode}
+                    onClick={() => setViewMode(item.mode)}
+                    // Use aria-current for navigation, instead of aria-pressed (which is for toggle buttons)
+                    aria-current={active ? "page" : undefined}
+                    type="button"
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-200 ${
+                      active
+                        ? "bg-blue-600/30 text-blue-400 border border-blue-500/30"
+                        : "text-gray-300 hover:bg-gray-700/30 hover:text-white"
+                    }`}
+                  >
+                    <item.icon className="h-4 w-4" />
+                    <div className="text-left">
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <div className="text-xs opacity-75">
+                        {item.description}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </nav>
           </div>
         </div>
@@ -170,6 +246,17 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Inline message area for network or UI errors */}
+        {(networkError || uiError) && (
+          <div
+            className="mb-4 rounded border border-red-500/30 bg-red-900/30 text-red-200 px-4 py-2"
+            role="alert"
+            aria-live="polite"
+          >
+            {networkError || uiError}
+          </div>
+        )}
+
         <div className="grid grid-cols-12 gap-6 h-[calc(100vh-120px)]">
           {/* Sidebar - Device List */}
           <div className="col-span-12 lg:col-span-3">
@@ -200,6 +287,7 @@ function App() {
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-60"
                     disabled={loadingTimeseries}
                     onClick={runTimeseriesAnalysis}
+                    type="button"
                   >
                     {loadingTimeseries
                       ? "Running Analysis..."
@@ -209,6 +297,7 @@ function App() {
                     className="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-60"
                     disabled={downloading}
                     onClick={handleDownloadCSV}
+                    type="button"
                   >
                     {downloading ? "Downloading..." : "Download Metrics CSV"}
                   </button>
@@ -223,6 +312,7 @@ function App() {
                     <h3 className="text-lg font-bold text-white mb-2">
                       Prediction Results
                     </h3>
+                    <TimeseriesResultsPanel results={timeseriesResults} />
                     {Object.entries(timeseriesResults).map(
                       ([agentId, result]) => (
                         <div
@@ -284,6 +374,7 @@ function App() {
                       <button
                         onClick={clearSelection}
                         className="flex items-center space-x-2 px-3 py-1 text-sm bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors"
+                        type="button"
                       >
                         <X className="h-4 w-4" />
                         <span>Close</span>
@@ -319,16 +410,22 @@ function App() {
         <div className="max-w-7xl mx-auto flex items-center justify-between text-sm">
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <div
+                className="w-2 h-2 bg-green-400 rounded-full animate-pulse"
+                aria-hidden="true"
+              ></div>
               <span className="text-green-400">System Online</span>
             </div>
             <span className="text-gray-400">
-              {topology.devices.filter((d) => d.status === "healthy").length}{" "}
-              healthy devices
+              {statusSummary.healthy} healthy, {statusSummary.warning} warning,{" "}
+              {statusSummary.critical} critical
             </span>
           </div>
           <div className="text-gray-400">
-            Last update: {new Date().toLocaleTimeString()}
+            Last update:{" "}
+            {lastUpdated
+              ? new Date(lastUpdated).toLocaleTimeString()
+              : new Date().toLocaleTimeString()}
           </div>
         </div>
       </div>
